@@ -26,7 +26,8 @@ def predict(image_path: str, cfg: dict) -> float:
     model_path = cfg["train"]["model_save_path"]
     image_size = cfg["data"]["image_size"]
 
-    model = build_model(pretrained=False).to(device)
+    dropout = cfg["model"].get("dropout", 0.3)
+    model = build_model(pretrained=False, dropout=dropout).to(device)
     model.load_state_dict(torch.load(model_path, map_location=device))
     model.eval()
 

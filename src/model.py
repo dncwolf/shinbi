@@ -9,11 +9,14 @@ import torch.nn as nn
 from torchvision.models import EfficientNet_B0_Weights, efficientnet_b0
 
 
-def build_model(pretrained: bool = True) -> nn.Module:
+def build_model(pretrained: bool = True, dropout: float = 0.3) -> nn.Module:
     weights = EfficientNet_B0_Weights.DEFAULT if pretrained else None
     model = efficientnet_b0(weights=weights)
-    # 最終層: 1280 → 1（logit）
-    model.classifier[1] = nn.Linear(1280, 1)
+    # 最終層: Dropout → Linear(1280, 1) → logit
+    model.classifier[1] = nn.Sequential(
+        nn.Dropout(p=dropout),
+        nn.Linear(1280, 1),
+    )
     return model
 
 

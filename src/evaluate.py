@@ -46,37 +46,27 @@ def main() -> None:
     model_path = cfg["train"]["model_save_path"]
 
     test_ds = get_dataset(processed_dir, "test", image_size)
-    test_loader = DataLoader(test_ds, batch_size=cfg["train"]["batch_size"], shuffle=False, num_workers=4)
+    test_loader = DataLoader(test_ds, batch_size=cfg["train"]["batch_size"], shuffle=False, num_workers=0)
     print(f"test: {len(test_ds)}枚, クラスマップ: {test_ds.class_to_idx}")
 
-    model = build_model(pretrained=False).to(device)
+    dropout = cfg["model"].get("dropout", 0.3)
+    model = build_model(pretrained=False, dropout=dropout).to(device)
     model.load_state_dict(torch.load(model_path, map_location=device))
     print(f"モデルロード: {model_path}")
 
     probs, labels = run_inference(model, test_loader, device)
 
-    # favorite のインデックスを確認
-    fav_idx = test_ds.class_to_idx.get("favorite", 0)
-    # fav_idx=0 なら prob > 0.5 → favorite=0 の予測なので反転が必要か確認
-    # BCEWithLogitsLoss は label=fav_idx=0 or 1 に合わせているので要注意
-    # train.py では favorite ラベルを pos_weight で強調しているため、
-    # sigmoid(logit) > 0.5 → positive (= fav_idx のクラス) を意味する
+    # dataset.py の target_transform で favorite=1, not_favorite=0 に反転済み。
+    # prob = sigmoid(logit) = P(favorite)、pos_label=1 で favorite を正例として評価。
     preds = [1 if p > 0.5 else 0 for p in probs]
 
     acc = accuracy_score(labels, preds)
-    prec = precision_score(labels, preds, pos_label=fav_idx, zero_division=0)
-    rec = recall_score(labels, preds, pos_label=fav_idx, zero_division=0)
-    f1 = f1_score(labels, preds, pos_label=fav_idx, zero_division=0)
+    prec = precision_score(labels, preds, pos_label=1, zero_division=0)
+    rec = recall_score(labels, preds, pos_label=1, zero_division=0)
+    f1 = f1_score(labels, preds, pos_label=1, zero_division=0)
+    auc = roc_auc_score(labels, probs)
 
-    # AUC: probs がお気に入りの確率として扱う
-    if fav_idx == 1:
-        auc_probs = probs
-    else:
-        auc_probs = [1 - p for p in probs]
-    binary_labels = [1 if l == fav_idx else 0 for l in labels]
-    auc = roc_auc_score(binary_labels, auc_probs)
-
-    cm = confusion_matrix(labels, preds)
+    cm = confusion_matrix(labels, preds, labels=[1, 0])
 
     print("\n=== 評価結果 ===")
     print(f"Accuracy : {acc:.4f} ({acc*100:.1f}%)")
@@ -90,16 +80,13 @@ def main() -> None:
     print(f"AUC-ROC >= 0.80: {'OK' if auc >= 0.80 else 'NG'} ({auc:.4f})")
     print(f"Recall  >= 70%: {'OK' if rec >= 0.70 else 'NG'} ({rec*100:.1f}%)")
 
-    print("\n=== 混同行列 ===")
-    class_names = [k for k, v in sorted(test_ds.class_to_idx.items(), key=lambda x: x[1])]
-    header = "         " + "  ".join(f"{n:>12}" for n in class_names)
-    print(header)
-    for i, row in enumerate(cm):
-        row_str = "  ".join(f"{v:>12}" for v in row)
-        print(f"{class_names[i]:>8} {row_str}")
+    print("\n=== 混同行列（行=実際, 列=予測）===")
+    print(f"{'':>14} {'予測:favorite':>14} {'予測:not_fav':>14}")
+    print(f"{'実際:favorite':>14} {cm[0][0]:>14} {cm[0][1]:>14}")
+    print(f"{'実際:not_fav':>14} {cm[1][0]:>14} {cm[1][1]:>14}")
 
     print("\n=== 詳細レポート ===")
-    print(classification_report(labels, preds, target_names=class_names))
+    print(classification_report(labels, preds, labels=[1, 0], target_names=["favorite", "not_favorite"]))
 
 
 if __name__ == "__main__":

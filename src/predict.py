@@ -27,7 +27,8 @@ def predict(image_path: str, cfg: dict) -> float:
     image_size = cfg["data"]["image_size"]
 
     dropout = cfg["model"].get("dropout", 0.3)
-    model = build_model(pretrained=False, dropout=dropout).to(device)
+    base = cfg["model"].get("base", "efficientnet_b3")
+    model = build_model(pretrained=False, dropout=dropout, base=base).to(device)
     model.load_state_dict(torch.load(model_path, map_location=device))
     model.eval()
 

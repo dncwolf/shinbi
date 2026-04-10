@@ -173,7 +173,7 @@ transforms.GaussianBlur(kernel_size=3, sigma=(0.1, 2.0)),
 | Recall（favorite） | 1.2% | 70%以上 |
 
 → **ラベル反転バグ（pos_weight が not_favorite を強調していた）が原因で Recall が壊滅的だった。**
-　修正後のモデル（実行 #3）で再評価予定。
+　修正後のモデル（実行 #3）で再評価済み（下記）。
 
 ---
 
@@ -184,4 +184,143 @@ transforms.GaussianBlur(kernel_size=3, sigma=(0.1, 2.0)),
 - `dataset.py` に `target_transform=lambda y: 1-y` を追加
   - favorite=1（正例）、not_favorite=0 に統一
   - `pos_weight=2.0` が正しく favorite の loss を強調するようになった
-- `evaluate.py` の評価ロジックを `pos_label=1` に統一
+- `evaluate.py` の評価ロジックを `pos_label=1` に統一、`--sweep` オプションで閾値スイープ追加
+
+### 学習結果（best val_loss=0.8449 / Epoch 23 で early stopping）
+
+### evaluate 結果（閾値スイープ込み）
+
+| threshold | accuracy | recall | 備考 |
+|---|---|---|---|
+| 0.30 | 45.6% | 97.6% | Recall OK |
+| 0.40 | 46.8% | 92.8% | Recall OK |
+| **0.50** | **57.7%** | **68.7%** | Recall NG |
+| 0.60 | 65.3% | 24.1% | — |
+
+- AUC-ROC: 0.6494
+- **閾値調整だけでは Recall≥70% と Accuracy≥75% を両立できない**
+- Recall を 70% 以上にするには閾値を 0.4 以下にする必要があり、Accuracy が 47% に落ちる
+
+---
+
+## 実行 #4 — 2026-04-10
+
+### 変更点（実行 #3 からの差分）
+
+| 項目 | 前回 | 今回 |
+|---|---|---|
+| freeze_epochs | 5 | 10 |
+| early_stopping_patience | 10 | 15 |
+
+### 学習結果（best val_loss=0.8522 / Epoch 16、Epoch 31 で early stopping）
+
+val_loss が Epoch 16 で 0.8522 まで改善した後、15 epoch 改善なく終了。
+前回（#3）の 0.8449 より悪化。freeze を長くすると backbone の fine-tune 開始が遅れ、
+結果的に収束が浅くなった可能性がある。
+
+### evaluate 結果（閾値スイープ込み）
+
+| threshold | accuracy | recall | 備考 |
+|---|---|---|---|
+| 0.30 | 46.0% | 98.8% | Recall OK |
+| 0.40 | 46.0% | 95.2% | Recall OK |
+| **0.50** | **50.8%** | **80.7%** | **Recall OK** |
+| 0.60 | 62.1% | 34.9% | — |
+
+- AUC-ROC: 0.6073（前回比 -0.04）
+- threshold=0.5 でも Recall 80.7% を達成したが、Accuracy は 50.8%
+
+---
+
+## 総括・根本課題
+
+複数回の試行を通じて、**AUC が 0.60〜0.65 付近で頭打ち**になっている。
+ハイパーパラメータの調整では改善しておらず、より根本的な対策が必要。
+
+### 考えられる原因
+
+1. **データの識別困難性** — 同じシーンで選ばなかった写真（not_fav の 70-80%）と favorite は視覚的に非常に似ており、EfficientNet-B0 では特徴が足りない
+2. **データ量不足** — favorite が 549 枚（train 384 枚）は転移学習でも少ない
+3. **ラベルノイズ** — お気に入りの基準が主観的で一貫していない可能性
+
+### 次の改善候補（根本的な対策）
+
+| 優先度 | 対策 | 期待効果 |
+|---|---|---|
+| ★★★ | EfficientNet-B3/B4 に変更 | より高い表現能力で AUC 改善 |
+| ★★★ | not_fav サンプリング戦略の見直し（同シーン比率を下げる） | 識別困難なペアを減らす |
+| ★★☆ | TTA（Test Time Augmentation） | 推論精度を若干改善 |
+| ★★☆ | val + train を合わせた学習（最終モデル） | データ量を増やす |
+| ★☆☆ | 誤分類画像の目視確認 | 問題の本質を理解する |
+
+---
+
+## 実行 #5 — 2026-04-10
+
+### 変更点
+
+| 項目 | 値 |
+|---|---|
+| モデル | EfficientNet-B3（B0 から変更） |
+| image_size | 300×300（B3 推奨サイズ） |
+| classifier 入力次元 | 1536（B0: 1280） |
+| その他 | 実行 #4 の設定を継承（freeze=10, patience=15） |
+
+### 学習結果（best val_loss=0.8663 / Epoch 26、Epoch 41 で early stopping）
+
+### evaluate 結果（閾値スイープ込み）
+
+| threshold | accuracy | recall | 備考 |
+|---|---|---|---|
+| 0.50 | 54.0% | 78.3% | Recall OK |
+| 0.60 | 64.9% | 41.0% | — |
+
+- AUC-ROC: **0.6362**
+
+### 結論：モデルサイズはボトルネックではない
+
+B3（パラメータ数 B0 比 約3倍）に変えても AUC が 0.63〜0.65 の範囲から出ない。
+**問題はモデルの表現力ではなくデータにある。**
+
+not_fav の 70〜80% が「同シーンで選ばなかった写真」であり、favorite と視覚的に
+ほぼ区別がつかない画像が多数混在している。これがモデルの識別能力の上限を規定している。
+
+### 最優先の次手：not_fav のサンプリング戦略を変える
+
+same-scene 比率を 70-80% → 30-40% に下げ、ランダム写真を増やす。
+これにより識別困難なペアが減り、モデルが「選ばれる写真の特徴」を学びやすくなる。
+
+### 学習結果（best val_loss=0.8449 / Epoch 23 で early stopping）
+
+val_loss は実行 #2 より高め。pos_weight が正しく favorite を強調するようになった分、
+favorite の誤検出ペナルティが増えて loss が高止まりした可能性がある。
+
+### evaluate 結果
+
+| 指標 | 結果 | 目標 | 前回比 |
+|---|---|---|---|
+| Accuracy | 57.7% | 75%以上 | - |
+| AUC-ROC | 0.6494 | 0.80以上 | ≒同等 |
+| Recall（favorite） | **68.7%** | 70%以上 | **+67.5%** ← 大幅改善 |
+
+混同行列：
+
+|  | 予測:favorite | 予測:not_fav |
+|---|---|---|
+| 実際:favorite | 57 | 26 |
+| 実際:not_fav | 79 | 86 |
+
+### 考察
+
+- **ラベル修正は有効**：Recall が 1.2% → 68.7% と劇的に改善
+- **AUC が低い（0.65）**：モデル自体の識別能力がまだ弱い。val_loss が 0.84 止まりで、Accuracy も低いことからモデルが favorite の特徴を十分に捉えられていない
+- **false positive が多い（79件）**：閾値 0.5 では favorite と判定しすぎている
+
+### 次の改善候補
+
+| 優先度 | 対策 | 理由 |
+|---|---|---|
+| ★★★ | 決定閾値を 0.5 → 0.6〜0.7 に調整 | false positive を減らして Accuracy/Precision を改善 |
+| ★★☆ | early_stopping_patience を 15 に延ばす | val_loss の改善余地がまだある可能性 |
+| ★★☆ | freeze_epochs を 10 に延ばす | head をより十分に学習してから backbone を解凍 |
+| ★☆☆ | pos_weight を手動で大きくする（例: 3.0） | Recall 70% を確実に超えるため |

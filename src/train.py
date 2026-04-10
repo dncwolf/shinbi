@@ -119,7 +119,8 @@ def main() -> None:
 
     # モデル
     dropout = cfg["model"].get("dropout", 0.3)
-    model = build_model(pretrained=cfg["model"]["pretrained"], dropout=dropout).to(device)
+    base = cfg["model"].get("base", "efficientnet_b3")
+    model = build_model(pretrained=cfg["model"]["pretrained"], dropout=dropout, base=base).to(device)
 
     backbone_lr = cfg["train"]["backbone_lr"]
     head_lr = cfg["train"]["head_lr"]

@@ -7,12 +7,12 @@ data:
     train: 0.70
     val: 0.15
     test: 0.15
-  image_size: 224
+  image_size: 300
   not_fav_target_count: 1100  # 549枚に対して1:2比率
   jpeg_quality: 85            # 軽量化時の JPEG 品質
 
 model:
-  base: efficientnet_b0
+  base: efficientnet_b3
   pretrained: true
   dropout: 0.3               # classifier head の Dropout
 
@@ -21,8 +21,8 @@ train:
   batch_size: 16
   backbone_lr: 0.00001       # backbone（解凍後）の learning rate
   head_lr: 0.0001            # classifier head の learning rate
-  freeze_epochs: 5           # backbone を凍結する最初の epoch 数
-  early_stopping_patience: 10
+  freeze_epochs: 10          # backbone を凍結する最初の epoch 数（前回: 5）
+  early_stopping_patience: 15
   scheduler_patience: 3      # ReduceLROnPlateau の patience
   model_save_path: models/best_model.pth
 

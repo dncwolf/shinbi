@@ -1,0 +1,24 @@
+data:
+  raw_dir: data/raw
+  processed_dir: data/processed
+  raw_fav_dir: fav
+  raw_not_fav_dir: not_fav
+  split:
+    train: 0.70
+    val: 0.15
+    test: 0.15
+  image_size: 224
+  not_fav_target_count: 1100  # 549枚に対して1:2比率
+
+model:
+  base: efficientnet_b0
+  pretrained: true
+
+train:
+  epochs: 50
+  batch_size: 16
+  learning_rate: 0.0001
+  early_stopping_patience: 10
+  model_save_path: models/best_model.pth
+
+device: mps

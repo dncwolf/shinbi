@@ -2,12 +2,16 @@
 test セットで学習済みモデルを評価する。
 accuracy / precision / recall / F1 / AUC-ROC と混同行列を出力。
 
+前提: extract_features.py で data/features/test.npz を事前生成しておくこと。
+
 --threshold で判定閾値を指定（デフォルト 0.5）。
 --sweep  で 0.3〜0.7 の閾値スイープを実行。
 """
 
 import argparse
+from pathlib import Path
 
+import numpy as np
 import torch
 import yaml
 from sklearn.metrics import (
@@ -19,10 +23,9 @@ from sklearn.metrics import (
     recall_score,
     roc_auc_score,
 )
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, TensorDataset
 
-from dataset import get_dataset
-from model import build_model, get_device
+from model import AestheticsHead, get_device
 
 
 def load_config(path: str = "config.yaml") -> dict:
@@ -30,13 +33,21 @@ def load_config(path: str = "config.yaml") -> dict:
         return yaml.safe_load(f)
 
 
+def load_features(path: Path) -> tuple[torch.Tensor, torch.Tensor]:
+    data = np.load(path)
+    return (
+        torch.tensor(data["features"], dtype=torch.float32),
+        torch.tensor(data["labels"], dtype=torch.long),
+    )
+
+
 @torch.no_grad()
-def run_inference(model, loader, device) -> tuple[list, list]:
-    model.eval()
+def run_inference(head, loader, device) -> tuple[list, list]:
+    head.eval()
     all_probs, all_labels = [], []
-    for images, labels in loader:
-        images = images.to(device)
-        logits = model(images)
+    for features, labels in loader:
+        features = features.to(device)
+        logits = head(features)
         probs = torch.sigmoid(logits).squeeze(1).cpu().tolist()
         all_probs.extend(probs)
         all_labels.extend(labels.tolist())
@@ -90,21 +101,28 @@ def main() -> None:
 
     cfg = load_config(args.config)
     device = get_device(cfg["device"])
-    processed_dir = cfg["data"]["processed_dir"]
-    image_size = cfg["data"]["image_size"]
+
+    features_dir = Path("data/features")
+    if not features_dir.exists():
+        print("エラー: data/features/ が見つかりません。")
+        print("先に: uv run python src/extract_features.py を実行してください。")
+        raise SystemExit(1)
+
+    test_features, test_labels = load_features(features_dir / "test.npz")
+    test_ds = TensorDataset(test_features, test_labels)
+    test_loader = DataLoader(test_ds, batch_size=cfg["train"]["batch_size"], shuffle=False)
+    print(f"test: {len(test_ds)}件")
+
+    model_cfg = cfg["model"]
+    head = AestheticsHead(
+        embed_dim=model_cfg.get("embed_dim", 768),
+        dropout=model_cfg.get("dropout", 0.2),
+    ).to(device)
     model_path = cfg["train"]["model_save_path"]
+    head.load_state_dict(torch.load(model_path, map_location=device))
+    print(f"Head ロード: {model_path}")
 
-    test_ds = get_dataset(processed_dir, "test", image_size)
-    test_loader = DataLoader(test_ds, batch_size=cfg["train"]["batch_size"], shuffle=False, num_workers=0)
-    print(f"test: {len(test_ds)}枚, クラスマップ: {test_ds.class_to_idx}")
-
-    dropout = cfg["model"].get("dropout", 0.3)
-    base = cfg["model"].get("base", "efficientnet_b3")
-    model = build_model(pretrained=False, dropout=dropout, base=base).to(device)
-    model.load_state_dict(torch.load(model_path, map_location=device))
-    print(f"モデルロード: {model_path}")
-
-    probs, labels = run_inference(model, test_loader, device)
+    probs, labels = run_inference(head, test_loader, device)
 
     if args.sweep:
         print("\n=== 閾値スイープ ===")
@@ -119,7 +137,6 @@ def main() -> None:
                 f"{t:>10.2f} {m['accuracy']:>10.4f} {m['precision']:>10.4f} "
                 f"{m['recall']:>10.4f} {m['f1']:>10.4f}{flag}"
             )
-            # Recall >= 70% を満たしつつ Accuracy が最大のものを best とする
             if meets_recall and (best is None or m["accuracy"] > best["accuracy"]):
                 best = m
         if best:

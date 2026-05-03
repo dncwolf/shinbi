@@ -1,12 +1,8 @@
 """
 config.yaml を読み込んで学習を実行する。
 
-改善点:
-  - Phase 1: backbone 凍結、classifier head のみ学習（freeze_epochs）
-  - Phase 2: backbone 解凍、layer-wise LR（backbone_lr < head_lr）
-  - ReduceLROnPlateau で val_loss 停滞時に lr 自動削減
-  - Dropout による正則化（model.py 側）
-  - num_workers=0（MPS との相性問題回避）
+前提: extract_features.py で data/features/ を事前生成しておくこと。
+事前抽出済み CLIP 埋め込みで MLP head のみを学習するため非常に高速。
 """
 
 from pathlib import Path
@@ -16,10 +12,9 @@ import torch
 import torch.nn as nn
 import yaml
 from sklearn.utils.class_weight import compute_class_weight
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, TensorDataset
 
-from dataset import get_dataset
-from model import build_model, get_device
+from model import AestheticsHead, get_device
 
 
 def load_config(path: str = "config.yaml") -> dict:
@@ -27,63 +22,50 @@ def load_config(path: str = "config.yaml") -> dict:
         return yaml.safe_load(f)
 
 
-def get_labels(dataset) -> list[int]:
-    return [label for _, label in dataset.samples]
-
-
-def freeze_backbone(model: nn.Module) -> None:
-    for param in model.features.parameters():
-        param.requires_grad = False
-
-
-def unfreeze_backbone(model: nn.Module) -> None:
-    for param in model.features.parameters():
-        param.requires_grad = True
-
-
-def make_optimizer(model: nn.Module, backbone_lr: float, head_lr: float) -> torch.optim.Adam:
-    return torch.optim.Adam([
-        {"params": model.features.parameters(), "lr": backbone_lr},
-        {"params": model.classifier.parameters(), "lr": head_lr},
-    ])
+def load_features(path: Path) -> tuple[torch.Tensor, torch.Tensor]:
+    data = np.load(path)
+    return (
+        torch.tensor(data["features"], dtype=torch.float32),
+        torch.tensor(data["labels"], dtype=torch.long),
+    )
 
 
 def train_one_epoch(
-    model: nn.Module,
+    head: nn.Module,
     loader: DataLoader,
     optimizer: torch.optim.Optimizer,
     criterion: nn.Module,
     device: torch.device,
 ) -> float:
-    model.train()
+    head.train()
     total_loss = 0.0
-    for images, labels in loader:
-        images = images.to(device)
+    for features, labels in loader:
+        features = features.to(device)
         labels = labels.float().unsqueeze(1).to(device)
         optimizer.zero_grad()
-        logits = model(images)
+        logits = head(features)
         loss = criterion(logits, labels)
         loss.backward()
         optimizer.step()
-        total_loss += loss.item() * len(images)
+        total_loss += loss.item() * len(features)
     return total_loss / len(loader.dataset)
 
 
 @torch.no_grad()
 def validate(
-    model: nn.Module,
+    head: nn.Module,
     loader: DataLoader,
     criterion: nn.Module,
     device: torch.device,
 ) -> float:
-    model.eval()
+    head.eval()
     total_loss = 0.0
-    for images, labels in loader:
-        images = images.to(device)
+    for features, labels in loader:
+        features = features.to(device)
         labels = labels.float().unsqueeze(1).to(device)
-        logits = model(images)
+        logits = head(features)
         loss = criterion(logits, labels)
-        total_loss += loss.item() * len(images)
+        total_loss += loss.item() * len(features)
     return total_loss / len(loader.dataset)
 
 
@@ -92,45 +74,41 @@ def main() -> None:
     device = get_device(cfg["device"])
     print(f"デバイス: {device}")
 
-    # データセット
-    processed_dir = cfg["data"]["processed_dir"]
-    image_size = cfg["data"]["image_size"]
+    features_dir = Path("data/features")
+    if not features_dir.exists():
+        print("エラー: data/features/ が見つかりません。")
+        print("先に: uv run python src/extract_features.py を実行してください。")
+        raise SystemExit(1)
+
+    train_features, train_labels = load_features(features_dir / "train.npz")
+    val_features, val_labels = load_features(features_dir / "val.npz")
+
     batch_size = cfg["train"]["batch_size"]
+    train_ds = TensorDataset(train_features, train_labels)
+    val_ds = TensorDataset(val_features, val_labels)
+    train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True)
+    val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False)
 
-    train_ds = get_dataset(processed_dir, "train", image_size, pre_resized=True)
-    val_ds = get_dataset(processed_dir, "val", image_size, pre_resized=True)
+    print(f"train: {len(train_ds)}件, val: {len(val_ds)}件")
 
-    # num_workers=0: MPS 環境での multiprocessing semaphore 問題を回避
-    train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=0)
-    val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False, num_workers=0)
-
-    print(f"train: {len(train_ds)}枚, val: {len(val_ds)}枚")
-    print(f"クラスマップ: {train_ds.class_to_idx}")
-
-    # class_weight
-    labels = get_labels(train_ds)
-    weights = compute_class_weight("balanced", classes=np.array([0, 1]), y=labels)
-    fav_idx = train_ds.class_to_idx.get("favorite", 0)
-    not_fav_idx = 1 - fav_idx
-    pos_weight = torch.tensor(weights[fav_idx] / weights[not_fav_idx], dtype=torch.float32).to(device)
+    labels_np = train_labels.numpy()
+    weights = compute_class_weight("balanced", classes=np.array([0, 1]), y=labels_np)
+    n_fav = int((labels_np == 1).sum())
+    n_not = int((labels_np == 0).sum())
+    print(f"favorite: {n_fav}, not_favorite: {n_not}")
+    pos_weight = torch.tensor(weights[1] / weights[0], dtype=torch.float32).to(device)
     print(f"pos_weight: {pos_weight.item():.4f}")
 
     criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
 
-    # モデル
-    dropout = cfg["model"].get("dropout", 0.3)
-    base = cfg["model"].get("base", "efficientnet_b3")
-    model = build_model(pretrained=cfg["model"]["pretrained"], dropout=dropout, base=base).to(device)
+    model_cfg = cfg["model"]
+    head = AestheticsHead(
+        embed_dim=model_cfg.get("embed_dim", 768),
+        dropout=model_cfg.get("dropout", 0.2),
+    ).to(device)
 
-    backbone_lr = cfg["train"]["backbone_lr"]
-    head_lr = cfg["train"]["head_lr"]
-    freeze_epochs = cfg["train"]["freeze_epochs"]
-
-    # Phase 1: backbone 凍結（head のみ学習）
-    freeze_backbone(model)
-    optimizer = torch.optim.Adam(model.classifier.parameters(), lr=head_lr)
-    print(f"Phase 1: backbone 凍結（{freeze_epochs} epoch）")
-
+    lr = cfg["train"]["learning_rate"]
+    optimizer = torch.optim.Adam(head.parameters(), lr=lr)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, mode="min", factor=0.5, patience=cfg["train"]["scheduler_patience"]
     )
@@ -140,38 +118,28 @@ def main() -> None:
     save_path = Path(cfg["train"]["model_save_path"])
     save_path.parent.mkdir(parents=True, exist_ok=True)
 
+    print(f"モデル: CLIP ViT-L-14 (frozen) + AestheticsHead (head のみ学習)")
+
     best_val_loss = float("inf")
     no_improve = 0
 
     for epoch in range(1, epochs + 1):
-
-        # Phase 2 への切り替え
-        if epoch == freeze_epochs + 1:
-            unfreeze_backbone(model)
-            optimizer = make_optimizer(model, backbone_lr, head_lr)
-            scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-                optimizer, mode="min", factor=0.5, patience=cfg["train"]["scheduler_patience"]
-            )
-            print(f"Phase 2: backbone 解凍（backbone_lr={backbone_lr}, head_lr={head_lr}）")
-
-        train_loss = train_one_epoch(model, train_loader, optimizer, criterion, device)
-        val_loss = validate(model, val_loader, criterion, device)
+        train_loss = train_one_epoch(head, train_loader, optimizer, criterion, device)
+        val_loss = validate(head, val_loader, criterion, device)
         scheduler.step(val_loss)
 
-        current_lr = optimizer.param_groups[-1]["lr"]
-        improved = val_loss < best_val_loss
-        if improved:
+        current_lr = optimizer.param_groups[0]["lr"]
+        if val_loss < best_val_loss:
             best_val_loss = val_loss
             no_improve = 0
-            torch.save(model.state_dict(), save_path)
+            torch.save(head.state_dict(), save_path)
             mark = " ✓"
         else:
             no_improve += 1
             mark = ""
 
-        phase = 1 if epoch <= freeze_epochs else 2
         print(
-            f"[P{phase}] Epoch {epoch:3d}/{epochs} | "
+            f"Epoch {epoch:3d}/{epochs} | "
             f"train_loss={train_loss:.4f} | "
             f"val_loss={val_loss:.4f}{mark} | "
             f"lr={current_lr:.2e} | "
@@ -183,7 +151,7 @@ def main() -> None:
             break
 
     print(f"学習完了。best val_loss={best_val_loss:.4f}")
-    print(f"モデル保存先: {save_path}")
+    print(f"Head 保存先: {save_path}")
 
 
 if __name__ == "__main__":

@@ -23,16 +23,21 @@ def load_config(path: str = "config.yaml") -> dict:
 
 def predict(image_path: str, cfg: dict) -> float:
     device = get_device(cfg["device"])
-    model_path = cfg["train"]["model_save_path"]
-    image_size = cfg["data"]["image_size"]
+    model_cfg = cfg["model"]
 
-    dropout = cfg["model"].get("dropout", 0.3)
-    base = cfg["model"].get("base", "efficientnet_b3")
-    model = build_model(pretrained=False, dropout=dropout, base=base).to(device)
-    model.load_state_dict(torch.load(model_path, map_location=device))
+    model = build_model(
+        backbone=model_cfg.get("backbone", "ViT-L-14"),
+        pretrained=model_cfg.get("pretrained", "openai"),
+        embed_dim=model_cfg.get("embed_dim", 768),
+        dropout=model_cfg.get("dropout", 0.2),
+    ).to(device)
+
+    head_path = cfg["train"]["model_save_path"]
+    model.head.load_state_dict(torch.load(head_path, map_location=device))
     model.eval()
 
-    transform = get_transform("val", image_size)
+    image_size = cfg["data"]["image_size"]
+    transform = get_transform("val", image_size, pre_resized=False)
     image = Image.open(image_path).convert("RGB")
     tensor = transform(image).unsqueeze(0).to(device)
 

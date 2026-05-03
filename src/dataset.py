@@ -1,6 +1,7 @@
 """
 ImageFolder ベースの Dataset。
 train / val / test で transform を切り替える。
+CLIP の正規化統計を使用。
 preprocess_images.py 実行済みの場合は Resize をスキップ。
 """
 
@@ -9,33 +10,30 @@ from pathlib import Path
 from torchvision import transforms
 from torchvision.datasets import ImageFolder
 
-IMAGENET_MEAN = [0.485, 0.456, 0.406]
-IMAGENET_STD = [0.229, 0.224, 0.225]
+CLIP_MEAN = [0.48145466, 0.4578275, 0.40821073]
+CLIP_STD = [0.26862954, 0.26130258, 0.27577711]
 
 
 def get_transform(split: str, image_size: int = 224, pre_resized: bool = True) -> transforms.Compose:
-    resize = [] if pre_resized else [transforms.Resize((image_size, image_size))]
+    resize = [] if pre_resized else [
+        transforms.Resize(image_size, interpolation=transforms.InterpolationMode.BICUBIC),
+        transforms.CenterCrop(image_size),
+    ]
 
     if split == "train":
-        return transforms.Compose(
-            resize + [
-                transforms.RandomHorizontalFlip(),
-                transforms.RandomVerticalFlip(),
-                transforms.RandomRotation(15),
-                transforms.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.2),
-                transforms.RandomGrayscale(p=0.1),
-                transforms.GaussianBlur(kernel_size=3, sigma=(0.1, 2.0)),
-                transforms.ToTensor(),
-                transforms.Normalize(IMAGENET_MEAN, IMAGENET_STD),
-            ]
-        )
+        return transforms.Compose(resize + [
+            transforms.RandomHorizontalFlip(),
+            transforms.RandomVerticalFlip(),
+            transforms.RandomRotation(15),
+            transforms.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.2),
+            transforms.ToTensor(),
+            transforms.Normalize(CLIP_MEAN, CLIP_STD),
+        ])
     else:
-        return transforms.Compose(
-            resize + [
-                transforms.ToTensor(),
-                transforms.Normalize(IMAGENET_MEAN, IMAGENET_STD),
-            ]
-        )
+        return transforms.Compose(resize + [
+            transforms.ToTensor(),
+            transforms.Normalize(CLIP_MEAN, CLIP_STD),
+        ])
 
 
 def get_dataset(

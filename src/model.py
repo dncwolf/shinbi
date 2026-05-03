@@ -1,41 +1,73 @@
 """
-EfficientNet-B0 の最終層を付け替えた二値分類モデル。
+CLIP ViT-L-14（frozen）+ LAION Aesthetics Predictor V2 スタイルの MLP head。
 学習時は logits を出力（BCEWithLogitsLoss に渡す）。
 推論時は sigmoid を適用して確率に変換する。
+保存・ロード対象は head の state_dict のみ（CLIP 重みは変化しないため）。
 """
 
+import open_clip
 import torch
 import torch.nn as nn
-from torchvision.models import (
-    EfficientNet_B0_Weights,
-    EfficientNet_B3_Weights,
-    efficientnet_b0,
-    efficientnet_b3,
-)
-
-# モデル別の classifier 入力次元
-_CLASSIFIER_IN_FEATURES = {
-    "efficientnet_b0": 1280,
-    "efficientnet_b3": 1536,
-}
-
-_MODEL_REGISTRY = {
-    "efficientnet_b0": (efficientnet_b0, EfficientNet_B0_Weights.DEFAULT),
-    "efficientnet_b3": (efficientnet_b3, EfficientNet_B3_Weights.DEFAULT),
-}
 
 
-def build_model(pretrained: bool = True, dropout: float = 0.3, base: str = "efficientnet_b3") -> nn.Module:
-    factory, default_weights = _MODEL_REGISTRY[base]
-    weights = default_weights if pretrained else None
-    model = factory(weights=weights)
-    in_features = _CLASSIFIER_IN_FEATURES[base]
-    # 最終層: Dropout → Linear(in_features, 1) → logit
-    model.classifier[1] = nn.Sequential(
-        nn.Dropout(p=dropout),
-        nn.Linear(in_features, 1),
-    )
-    return model
+class AestheticsHead(nn.Module):
+    """LAION Aesthetics Predictor V2 と同じ MLP 構造（768→512→256→128→64→1）"""
+
+    def __init__(self, embed_dim: int = 768, dropout: float = 0.2):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(embed_dim, 512),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(512, 256),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(256, 128),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(128, 64),
+            nn.ReLU(),
+            nn.Dropout(dropout / 2),
+            nn.Linear(64, 1),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.net(x)
+
+
+class CLIPAestheticsModel(nn.Module):
+    """CLIP encoder（常に frozen + eval）+ 学習可能な AestheticsHead"""
+
+    def __init__(self, clip_model: nn.Module, head: AestheticsHead):
+        super().__init__()
+        self.clip = clip_model
+        self.head = head
+
+    def train(self, mode: bool = True):
+        super().train(mode)
+        self.clip.eval()  # CLIP は常に eval（BN 統計を更新しない）
+        return self
+
+    def forward(self, images: torch.Tensor) -> torch.Tensor:
+        with torch.no_grad():
+            features = self.clip.encode_image(images)
+            features = features / features.norm(dim=-1, keepdim=True)
+        return self.head(features.float())
+
+
+def build_model(
+    backbone: str = "ViT-L-14",
+    pretrained: str = "openai",
+    embed_dim: int = 768,
+    dropout: float = 0.2,
+) -> nn.Module:
+    clip_model, _, _ = open_clip.create_model_and_transforms(backbone, pretrained=pretrained)
+    clip_model.eval()
+    for param in clip_model.parameters():
+        param.requires_grad = False
+
+    head = AestheticsHead(embed_dim=embed_dim, dropout=dropout)
+    return CLIPAestheticsModel(clip_model, head)
 
 
 def get_device(preferred: str = "mps") -> torch.device:

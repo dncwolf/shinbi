@@ -1,12 +1,13 @@
 [project]
 name = "shinbi"
 version = "0.1.0"
-description = "お気に入り写真分類モデル（EfficientNet-B0 転移学習）"
+description = "お気に入り写真分類モデル（CLIP + LAION Aesthetics MLP head）"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "torch>=2.2.0",
     "torchvision>=0.17.0",
+    "open-clip-torch>=2.24.0",
     "pyyaml>=6.0",
     "scikit-learn>=1.4.0",
     "pillow>=10.0.0",

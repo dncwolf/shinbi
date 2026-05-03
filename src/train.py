@@ -103,8 +103,11 @@ def main() -> None:
 
     model_cfg = cfg["model"]
     head = AestheticsHead(
-        embed_dim=model_cfg.get("embed_dim", 1536),
-        dropout=model_cfg.get("dropout", 0.2),
+        clip_dim=model_cfg.get("clip_dim", 768),
+        nima_dim=model_cfg.get("nima_dim", 1536),
+        clip_out=model_cfg.get("clip_out", 256),
+        nima_out=model_cfg.get("nima_out", 128),
+        dropout=model_cfg.get("dropout", 0.5),
     ).to(device)
 
     lr = cfg["train"]["learning_rate"]
@@ -118,7 +121,14 @@ def main() -> None:
     save_path = Path(cfg["train"]["model_save_path"])
     save_path.parent.mkdir(parents=True, exist_ok=True)
 
-    print("モデル: CLIP ViT-L-14 + NIMA Aesthetic + NIMA Technical (all frozen) + AestheticsHead (head のみ学習)")
+    clip_out = model_cfg.get("clip_out", 256)
+    nima_out = model_cfg.get("nima_out", 128)
+    print(
+        f"モデル: CLIP({clip_out}d) + NIMA Aes({nima_out}d) + NIMA Tech({nima_out}d) "
+        f"→ 融合({clip_out + nima_out * 2}d) → 64 → 1"
+    )
+    print(f"CLIP配点: {clip_out}/{clip_out + nima_out*2}={clip_out/(clip_out+nima_out*2)*100:.0f}%  "
+          f"NIMA合計: {nima_out*2/(clip_out+nima_out*2)*100:.0f}%")
 
     best_val_loss = float("inf")
     no_improve = 0

@@ -115,8 +115,11 @@ def main() -> None:
 
     model_cfg = cfg["model"]
     head = AestheticsHead(
-        embed_dim=model_cfg.get("embed_dim", 1536),
-        dropout=model_cfg.get("dropout", 0.2),
+        clip_dim=model_cfg.get("clip_dim", 768),
+        nima_dim=model_cfg.get("nima_dim", 1536),
+        clip_out=model_cfg.get("clip_out", 256),
+        nima_out=model_cfg.get("nima_out", 128),
+        dropout=model_cfg.get("dropout", 0.5),
     ).to(device)
     model_path = cfg["train"]["model_save_path"]
     head.load_state_dict(torch.load(model_path, map_location=device, weights_only=True))

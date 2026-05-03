@@ -12,7 +12,10 @@ data:
   jpeg_quality: 85
 
 model:
-  embed_dim: 3840
+  clip_dim: 768
+  nima_dim: 1536
+  clip_out: 256   # CLIP の投影先次元（NIMA より大きくして CLIP を重視）
+  nima_out: 128   # NIMA 各モデルの投影先次元
   dropout: 0.5
 
 train:

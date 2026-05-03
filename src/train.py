@@ -108,7 +108,7 @@ def main() -> None:
     ).to(device)
 
     lr = cfg["train"]["learning_rate"]
-    optimizer = torch.optim.Adam(head.parameters(), lr=lr)
+    optimizer = torch.optim.Adam(head.parameters(), lr=lr, weight_decay=1e-3)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, mode="min", factor=0.5, patience=cfg["train"]["scheduler_patience"]
     )
@@ -118,7 +118,7 @@ def main() -> None:
     save_path = Path(cfg["train"]["model_save_path"])
     save_path.parent.mkdir(parents=True, exist_ok=True)
 
-    print("モデル: NIMA InceptionResNetV2 (frozen) + AestheticsHead (head のみ学習)")
+    print("モデル: CLIP ViT-L-14 + NIMA Aesthetic + NIMA Technical (all frozen) + AestheticsHead (head のみ学習)")
 
     best_val_loss = float("inf")
     no_improve = 0

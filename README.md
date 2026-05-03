@@ -9,9 +9,23 @@
 | 言語 | Python 3.13 |
 | パッケージ管理 | uv |
 | フレームワーク | PyTorch |
-| モデル | EfficientNet-B3（ImageNet 転移学習） |
+| バックボーン | CLIP ViT-L-14 + NIMA Aesthetic + NIMA Technical（3バックボーン融合） |
 | デバイス | Apple Silicon MPS |
 | 設定 | config.yaml |
+
+## アーキテクチャ
+
+特徴量抽出（frozen）と分類ヘッドの学習を分離した 2フェーズ方式。
+
+```
+CLIP ViT-L-14          →  768-dim（意味的特徴、L2正規化）
+NIMA Aesthetic         → 1536-dim（美的品質、AVA学習済み、L2正規化）
+NIMA Technical (KonIQ) → 1536-dim（技術的品質、KonIQ学習済み、L2正規化）
+                          ─────────────
+                           3840-dim 連結
+                               ↓
+              BN → Linear(128) → ReLU → Dropout(0.5) → Linear(1)
+```
 
 ## セットアップ
 
@@ -26,19 +40,22 @@ uv sync
 #    data/raw/fav/        ← お気に入り画像
 #    data/raw/not_fav/    ← 非お気に入り画像
 
-# 2. 前処理（リサイズ・JPEG 圧縮）
+# 2. 前処理（224×224 JPEG にリサイズ・圧縮）
 uv run python src/preprocess_images.py
 
 # 3. train / val / test に分割
 uv run python src/split_data.py
 
-# 4. 学習
+# 4. 特徴量抽出（3バックボーンで一度だけ実行）
+uv run python src/extract_features.py
+
+# 5. 学習（事前抽出済み特徴量で分類ヘッドのみ学習）
 uv run python src/train.py
 
-# 5. 評価
-uv run python src/evaluate.py
+# 6. 評価
+uv run python src/evaluate.py --sweep
 
-# 6. 推論
+# 7. 推論
 uv run python src/predict.py --image path/to/photo.jpg
 # → お気に入り確率: 83.4%
 ```
@@ -56,20 +73,31 @@ uv run python src/predict.py --image path/to/photo.jpg
 
 | パラメータ | 値 |
 |------------|-----|
+| embed_dim | 3840 |
+| dropout | 0.5 |
 | epochs | 50 |
-| batch_size | 16 |
-| freeze_epochs | 10（head のみ学習） |
-| backbone_lr | 1e-5 |
-| head_lr | 1e-4 |
-| dropout | 0.3 |
+| batch_size | 32 |
+| learning_rate | 1e-4 |
+| weight_decay | 1e-3 |
 | early_stopping_patience | 15 |
 
-## 評価目標
+## 評価目標・達成状況
 
-| 指標 | 目標 |
-|------|------|
-| Accuracy | 75% 以上 |
-| AUC-ROC | 0.80 以上 |
-| Recall（お気に入り） | 70% 以上 |
+| 指標 | 目標 | 最良結果（実行 #8） |
+|------|------|---------------------|
+| Accuracy | 75% 以上 | 59.7% |
+| AUC-ROC | 0.80 以上 | **0.7218**（全実行最高） |
+| Recall（お気に入り） | 70% 以上 | **71.1%** ✓ |
 
 お気に入りを見逃す方がストレスが大きいため、Recall を重視する。
+
+## 実験履歴
+
+| 実行 | バックボーン | AUC-ROC |
+|------|--------------|---------|
+| #1〜#5 | EfficientNet-B0/B3 | 0.61〜0.65 |
+| #6 | CLIP ViT-L-14 | 0.6773 |
+| #7 | NIMA Aesthetic のみ | 0.5915 |
+| **#8** | **CLIP + NIMA Aesthetic + NIMA Technical** | **0.7218** |
+
+詳細は [log.md](log.md) を参照。

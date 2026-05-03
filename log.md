@@ -506,3 +506,98 @@ val_loss が不安定（0.88〜1.09 の幅で変動）で、CLIP 時（0.88〜0.
 個人的写真お気に入り予測において **CLIP > EfficientNet > NIMA** の順で有効。
 NIMA はバックボーンとして不適切であるため、次回は CLIP ViT-L-14 に戻して
 データ戦略（same-scene 比率削減・augmentation 多様化）を改善する方向で進める。
+
+---
+
+## 実行 #8 — 2026-05-03
+
+### アーキテクチャ：CLIP + NIMA Aesthetic + NIMA Technical 3バックボーン融合
+
+#6（CLIP 単体, 0.6773）と #7（NIMA 単体, 0.5915）の両バックボーンを組み合わせ、
+それぞれが持つ異なる表現空間の情報を最大限に活用する。
+
+| 項目 | 変更内容 |
+|---|---|
+| Backbone 1 | CLIP ViT-L-14（768-dim, L2 正規化） |
+| Backbone 2 | NIMA Aesthetic — InceptionResNetV2, AVA 学習済み（1536-dim, L2 正規化） |
+| Backbone 3 | NIMA Technical — InceptionResNetV2, KonIQ 学習済み（1536-dim, L2 正規化） |
+| 連結ベクトル | 768 + 1536 + 1536 = **3840-dim** |
+| Head 構成 | BN(3840) → Linear(3840→128) → ReLU → Dropout(0.5) → Linear(128→1) |
+| 学習可能パラメータ | 約 491,905（head のみ） |
+| optimizer | Adam（lr=1e-4, weight_decay=1e-3） |
+| 全バックボーン | 常に frozen / eval |
+
+#### Head 設計の経緯
+
+最初に深い MLP（3840→512→256→128→64→1）を試したところ、約 210 万パラメータが
+1154 サンプルに対して多すぎ、Epoch 3 以降で即座に過学習した（train_loss=0.15, val_loss=1.53）。
+AUC は 0.6876 と#6 を上回ったものの不安定な学習であったため、
+**BN + 1 hidden layer(128) + Dropout(0.5)** の軽量構成に再設計。
+
+### 学習結果（best val_loss=0.8536 / Epoch 2、Epoch 17 で early stopping）
+
+| Epoch | train_loss | val_loss | lr | patience |
+|---|---|---|---|---|
+| 1 | 0.8591 | **0.9052** ✓ | 1e-4 | 0/15 |
+| 2 | 0.7591 | **0.8536** ✓ | 1e-4 | 0/15 |
+| 3〜17 | 0.73→0.49 | 0.86〜0.92 | 1e-4→1.25e-5 | 〜15/15 |
+| 17 | 0.5078 | 0.9205 | 1.25e-5 | 15/15 → **Early stopping** |
+
+- best val_loss: **0.8536**（Epoch 2）
+
+### evaluate 結果（閾値スイープ込み）
+
+| threshold | accuracy | precision | recall | f1 | 備考 |
+|---|---|---|---|---|---|
+| 0.30 | 45.6% | 37.9% | 97.6% | 54.6% | Recall OK |
+| 0.40 | 47.6% | 38.7% | 96.4% | 55.2% | Recall OK |
+| **0.50** | **59.7%** | **43.7%** | **71.1%** | **54.1%** | **Recall OK ← 最良** |
+| 0.60 | 68.5% | 60.0% | 18.1% | 27.8% | — |
+| 0.70 | 66.5% | 0.0% | 0.0% | 0.0% | — |
+
+- AUC-ROC: **0.7218**（全実行通算の新記録）
+- threshold=0.5 で Recall 71.1%（目標 70% 達成）
+
+混同行列（threshold=0.50）：
+
+|  | 予測:favorite | 予測:not_fav |
+|---|---|---|
+| 実際:favorite | 59 | 24 |
+| 実際:not_fav | 76 | 89 |
+
+### 目標値チェック
+
+| 指標 | 結果 | 目標 | 判定 | 前回比（#6） |
+|---|---|---|---|---|
+| Accuracy | 59.7% | 75%以上 | NG | +2.8% |
+| AUC-ROC | **0.7218** | 0.80以上 | NG（**全実行最高**） | **+0.0445** |
+| Recall（favorite） | **71.1%** | 70%以上 | **OK** | ≒同等 |
+
+### モデル比較（全実行通算）
+
+| 実行 | backbone | AUC-ROC | Recall@0.5 | Accuracy@0.5 |
+|---|---|---|---|---|
+| #1〜#5 | EfficientNet-B0/B3 | 0.61〜0.65 | 1〜81% | 46〜66% |
+| #6 | CLIP ViT-L-14 | 0.6773 | 83.1% | 56.9% |
+| #7 | NIMA Aesthetic only | 0.5915 | 95.2% | 46.0% |
+| **#8** | **CLIP + NIMA Aes + NIMA Tech** | **0.7218** | **71.1%** | **59.7%** |
+
+### 考察
+
+- **3 バックボーン融合が有効**：CLIP 単体（0.68）と NIMA 単体（0.59）の単純な性能より、
+  融合後（0.72）の方が高い AUC を達成。各バックボーンが捉える特徴が相補的に機能した。
+- **NIMA Technical（KonIQ）の寄与**：技術的画質の情報が、美的評価（CLIP・NIMA Aesthetic）だけでは
+  拾えない「撮影品質の良い写真を好む」傾向を補足している可能性。
+- **Accuracy はまだ低い（59.7%）**：false positive（76件）が多く、モデルが
+  positive（favorite）に偏りやすい。pos_weight=2.0 による bias が影響。
+- **val_loss が Epoch 2 で頭打ち**：3840次元の特徴量でもサンプル数（1154件）に対しては
+  過学習が早い。より多くのデータがあれば、このアーキテクチャの真価が発揮できる可能性。
+
+### 次の改善候補
+
+| 優先度 | 対策 | 期待効果 |
+|---|---|---|
+| ★★★ | not_fav の same-scene 比率を下げる | 識別困難なペアを減らし AUC を根本改善 |
+| ★★☆ | pos_weight を 1.5 に下げる | false positive を抑えて Accuracy 改善 |
+| ★★☆ | threshold を 0.55〜0.60 に調整 | Recall 70% 維持しつつ Accuracy 改善 |
+| ★☆☆ | NIMA SPAQ を 4 つ目のバックボーンとして追加 | さらなる AUC 改善（over-fitting に注意） |

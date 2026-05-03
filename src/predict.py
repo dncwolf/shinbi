@@ -13,7 +13,7 @@ import yaml
 from PIL import Image
 
 from dataset import get_transform
-from model import build_model, get_device
+from model import AestheticsHead, build_model, get_device
 
 
 def load_config(path: str = "config.yaml") -> dict:
@@ -26,14 +26,14 @@ def predict(image_path: str, cfg: dict) -> float:
     model_cfg = cfg["model"]
 
     model = build_model(
-        backbone=model_cfg.get("backbone", "ViT-L-14"),
-        pretrained=model_cfg.get("pretrained", "openai"),
-        embed_dim=model_cfg.get("embed_dim", 768),
+        embed_dim=model_cfg.get("embed_dim", 1536),
         dropout=model_cfg.get("dropout", 0.2),
     ).to(device)
 
     head_path = cfg["train"]["model_save_path"]
-    model.head.load_state_dict(torch.load(head_path, map_location=device))
+    model.head.load_state_dict(
+        torch.load(head_path, map_location=device, weights_only=True)
+    )
     model.eval()
 
     image_size = cfg["data"]["image_size"]

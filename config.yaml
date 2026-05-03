@@ -12,9 +12,7 @@ data:
   jpeg_quality: 85
 
 model:
-  backbone: ViT-L-14
-  pretrained: openai
-  embed_dim: 768
+  embed_dim: 1536
   dropout: 0.2
 
 train:

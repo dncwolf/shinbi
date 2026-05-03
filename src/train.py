@@ -2,7 +2,7 @@
 config.yaml を読み込んで学習を実行する。
 
 前提: extract_features.py で data/features/ を事前生成しておくこと。
-事前抽出済み CLIP 埋め込みで MLP head のみを学習するため非常に高速。
+NIMA backbone（frozen）の事前抽出済み特徴量で AestheticsHead のみを学習する。
 """
 
 from pathlib import Path
@@ -103,7 +103,7 @@ def main() -> None:
 
     model_cfg = cfg["model"]
     head = AestheticsHead(
-        embed_dim=model_cfg.get("embed_dim", 768),
+        embed_dim=model_cfg.get("embed_dim", 1536),
         dropout=model_cfg.get("dropout", 0.2),
     ).to(device)
 
@@ -118,7 +118,7 @@ def main() -> None:
     save_path = Path(cfg["train"]["model_save_path"])
     save_path.parent.mkdir(parents=True, exist_ok=True)
 
-    print(f"モデル: CLIP ViT-L-14 (frozen) + AestheticsHead (head のみ学習)")
+    print("モデル: NIMA InceptionResNetV2 (frozen) + AestheticsHead (head のみ学習)")
 
     best_val_loss = float("inf")
     no_improve = 0

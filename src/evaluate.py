@@ -115,11 +115,11 @@ def main() -> None:
 
     model_cfg = cfg["model"]
     head = AestheticsHead(
-        embed_dim=model_cfg.get("embed_dim", 768),
+        embed_dim=model_cfg.get("embed_dim", 1536),
         dropout=model_cfg.get("dropout", 0.2),
     ).to(device)
     model_path = cfg["train"]["model_save_path"]
-    head.load_state_dict(torch.load(model_path, map_location=device))
+    head.load_state_dict(torch.load(model_path, map_location=device, weights_only=True))
     print(f"Head ロード: {model_path}")
 
     probs, labels = run_inference(head, test_loader, device)

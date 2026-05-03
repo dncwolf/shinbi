@@ -1,9 +1,9 @@
 """
-CLIP ViT-L-14 で data/processed/ 以下の全画像を一度だけ推論し、
+NIMA InceptionResNetV2 backbone で data/processed/ 以下の全画像を一度だけ推論し、
 埋め込みベクトルを data/features/ に保存する。
 
 train.py よりも前に一度だけ実行すること。
-保存後は CLIP モデルのロードが不要になり、学習が数十倍高速になる。
+保存後は NIMA backbone のロードが不要になり、学習が数十倍高速になる。
 """
 
 from pathlib import Path
@@ -23,15 +23,16 @@ def load_config(path: str = "config.yaml") -> dict:
 
 
 @torch.no_grad()
-def extract(model, dataset, device, batch_size: int = 64) -> tuple[np.ndarray, np.ndarray]:
+def extract(model, dataset, device, batch_size: int = 32) -> tuple[np.ndarray, np.ndarray]:
     model.eval()
     all_features, all_labels = [], []
     loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=0)
     for images, labels in loader:
         images = images.to(device)
-        features = model.clip.encode_image(images)
-        features = features / features.norm(dim=-1, keepdim=True)
-        all_features.append(features.float().cpu().numpy())
+        feats = model.backbone(images)
+        pooled = model.global_pool(feats[-1])
+        features = pooled.view(pooled.size(0), -1).float().cpu().numpy()
+        all_features.append(features)
         all_labels.extend(labels.numpy())
     return np.concatenate(all_features), np.array(all_labels)
 
@@ -43,9 +44,7 @@ def main() -> None:
 
     model_cfg = cfg["model"]
     model = build_model(
-        backbone=model_cfg.get("backbone", "ViT-L-14"),
-        pretrained=model_cfg.get("pretrained", "openai"),
-        embed_dim=model_cfg.get("embed_dim", 768),
+        embed_dim=model_cfg.get("embed_dim", 1536),
         dropout=model_cfg.get("dropout", 0.2),
     ).to(device)
 
